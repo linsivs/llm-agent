@@ -2,10 +2,13 @@
 
 import Image from "next/image";
 import {
+  ArrowLeft,
   ArrowRight,
   ChartBar,
   ChartScatter,
+  ChatCircleDots,
   CheckCircle,
+  Clock,
   Code,
   Database,
   DownloadSimple,
@@ -13,7 +16,9 @@ import {
   FileXls,
   Flask,
   Info,
+  PaperPlaneTilt,
   Play,
+  Robot,
   ShieldCheck,
   Sparkle,
   TerminalWindow,
@@ -33,10 +38,30 @@ import {
 
 import type {
   AnalysisResponse,
-  ApiErrorResponse
+  ApiErrorResponse,
+  ChatMessage,
+  ChatResponse
 } from "@/lib/contracts";
 
 type ViewState = "idle" | "analyzing" | "success" | "error";
+type UiError = Pick<
+  ApiErrorResponse,
+  "error" | "code" | "provider" | "retryAfterSeconds"
+>;
+type ChatEntry = ChatMessage & {
+  charts?: ChatResponse["charts"];
+  trace?: ChatResponse["trace"];
+};
+
+class ApiClientError extends Error {
+  readonly details: UiError;
+
+  constructor(details: UiError) {
+    super(details.error);
+    this.name = "ApiClientError";
+    this.details = details;
+  }
+}
 
 const API_URL = (
   process.env.NEXT_PUBLIC_AGENT_API_URL || "http://localhost:8787"
@@ -47,6 +72,12 @@ const progressStages = [
   "Агент исследует структуру и качество",
   "Python считает метрики и строит графики",
   "Gemini проверяет факты и собирает отчет"
+];
+
+const chatSuggestions = [
+  "Какие строки выглядят аномальными?",
+  "Что сильнее всего влияет на результат?",
+  "Сравни ключевые группы между собой"
 ];
 
 const demoResult: AnalysisResponse = {
@@ -158,9 +189,14 @@ export function AnalysisWorkspace() {
   const [instructions, setInstructions] = useState("");
   const [viewState, setViewState] = useState<ViewState>("idle");
   const [result, setResult] = useState<AnalysisResponse | null>(null);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<UiError | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
+  const [isDemo, setIsDemo] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatEntry[]>([]);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatError, setChatError] = useState<UiError | null>(null);
 
   useEffect(() => {
     if (viewState !== "analyzing") {
@@ -175,6 +211,27 @@ export function AnalysisWorkspace() {
 
     return () => window.clearInterval(timer);
   }, [viewState]);
+
+  useEffect(() => {
+    if (!chatOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !chatBusy) {
+        setChatOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [chatBusy, chatOpen]);
 
   const fileLabel = useMemo(() => {
     if (!file) {
@@ -195,25 +252,31 @@ export function AnalysisWorkspace() {
 
     const lowerName = candidate.name.toLowerCase();
     if (!lowerName.endsWith(".csv") && !lowerName.endsWith(".xlsx")) {
-      setError("Поддерживаются только CSV и XLSX.");
+      setError({
+        error: "Поддерживаются только CSV и XLSX.",
+        code: "UNSUPPORTED_FILE"
+      });
       setViewState("error");
       return;
     }
 
     if (candidate.size > 10 * 1024 * 1024) {
-      setError("Файл превышает лимит 10 МБ.");
+      setError({
+        error: "Файл превышает лимит 10 МБ.",
+        code: "BAD_REQUEST"
+      });
       setViewState("error");
       return;
     }
 
     if (candidate.size === 0) {
-      setError("Файл пуст.");
+      setError({ error: "Файл пуст.", code: "BAD_REQUEST" });
       setViewState("error");
       return;
     }
 
     setFile(candidate);
-    setError("");
+    setError(null);
     if (viewState === "error") {
       setViewState("idle");
     }
@@ -233,15 +296,19 @@ export function AnalysisWorkspace() {
     event.preventDefault();
 
     if (!file) {
-      setError("Сначала выберите датасет.");
+      setError({ error: "Сначала выберите датасет.", code: "BAD_REQUEST" });
       setViewState("error");
       return;
     }
 
+    releaseSession();
     setViewState("analyzing");
     setProgressStage(0);
-    setError("");
+    setError(null);
     setResult(null);
+    setIsDemo(false);
+    setChatMessages([]);
+    setChatError(null);
 
     const body = new FormData();
     body.append("file", file);
@@ -252,13 +319,12 @@ export function AnalysisWorkspace() {
         method: "POST",
         body
       });
-      const payload = (await response.json()) as
-        | AnalysisResponse
-        | ApiErrorResponse;
+      const payload = await readJsonResponse<AnalysisResponse>(response);
 
-      if (!response.ok || "error" in payload) {
-        throw new Error(
-          "error" in payload ? payload.error : "Анализ не завершен."
+      if (!response.ok || isApiError(payload)) {
+        throw apiErrorFromPayload(
+          payload,
+          "Агент не смог завершить анализ."
         );
       }
 
@@ -266,29 +332,34 @@ export function AnalysisWorkspace() {
       setViewState("success");
       revealResult();
     } catch (requestError) {
-      setError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Не удалось связаться с backend."
-      );
+      setError(toUiError(requestError));
       setViewState("error");
     }
   }
 
   function showDemo() {
+    releaseSession();
     setResult(demoResult);
     setViewState("success");
-    setError("");
+    setError(null);
+    setIsDemo(true);
+    setChatMessages([]);
+    setChatError(null);
     revealResult();
   }
 
   function reset() {
+    releaseSession();
     setFile(null);
     setInstructions("");
     setResult(null);
-    setError("");
+    setError(null);
     setViewState("idle");
     setProgressStage(0);
+    setIsDemo(false);
+    setChatOpen(false);
+    setChatMessages([]);
+    setChatError(null);
     if (inputRef.current) {
       inputRef.current.value = "";
     }
@@ -306,6 +377,129 @@ export function AnalysisWorkspace() {
       }
       window.scrollTo(0, 0);
     });
+  }
+
+  function releaseSession() {
+    const sessionId = result?.meta.sessionId;
+    if (!sessionId || isDemo) {
+      return;
+    }
+
+    void fetch(`${API_URL}/sessions/${sessionId}`, {
+      method: "DELETE",
+      keepalive: true
+    }).catch(() => undefined);
+  }
+
+  function openChat() {
+    if (!result) {
+      return;
+    }
+
+    setChatMessages((current) =>
+      current.length > 0
+        ? current
+        : [
+            {
+              id: "chat-intro",
+              role: "assistant",
+              content: isDemo
+                ? "Это демонстрационный режим интерфейса. Задайте вопрос по отчету — я покажу, как будет выглядеть продолжение анализа."
+                : "Отчет готов, а Python-сессия с датасетом еще активна. Задайте уточняющий вопрос — я выполню новые вычисления по тому же файлу.",
+              createdAt: new Date().toISOString()
+            }
+          ]
+    );
+    setChatError(null);
+    setChatOpen(true);
+  }
+
+  async function sendChatMessage(message: string) {
+    if (!result || chatBusy || !message.trim()) {
+      return;
+    }
+
+    const cleanMessage = message.trim();
+    const userMessage: ChatEntry = {
+      id: createClientId(),
+      role: "user",
+      content: cleanMessage,
+      createdAt: new Date().toISOString()
+    };
+    setChatMessages((current) => [...current, userMessage]);
+    setChatError(null);
+    setChatBusy(true);
+
+    if (isDemo) {
+      await new Promise((resolve) => window.setTimeout(resolve, 850));
+      setChatMessages((current) => [
+        ...current,
+        {
+          id: createClientId(),
+          role: "assistant",
+          content:
+            "В демо-датасете Восток дает 41% прироста выручки. Чтобы подтвердить устойчивость результата, агент дополнительно сравнил бы распределения среднего чека и заказов по регионам через Python.",
+          evidence: [
+            "Рост выручки Востока: 18,4%",
+            "Рост числа заказов: 13,2%",
+            "Режим демо не обращается к API"
+          ],
+          createdAt: new Date().toISOString()
+        }
+      ]);
+      setChatBusy(false);
+      return;
+    }
+
+    const sessionId = result.meta.sessionId;
+    if (!sessionId) {
+      setChatError({
+        error: "Сессия датасета недоступна. Запустите анализ заново.",
+        code: "SESSION_EXPIRED"
+      });
+      setChatBusy(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, message: cleanMessage })
+      });
+      const payload = await readJsonResponse<ChatResponse>(response);
+
+      if (!response.ok || isApiError(payload)) {
+        throw apiErrorFromPayload(
+          payload,
+          "Агент не смог ответить на вопрос."
+        );
+      }
+
+      setChatMessages((current) => [
+        ...current,
+        {
+          ...payload.message,
+          charts: payload.charts,
+          trace: payload.trace
+        }
+      ]);
+      setResult((current) =>
+        current
+          ? {
+              ...current,
+              meta: {
+                ...current.meta,
+                sessionExpiresAt: payload.meta.sessionExpiresAt
+              }
+            }
+          : current
+      );
+    } catch (requestError) {
+      setChatError(toUiError(requestError));
+    } finally {
+      setChatBusy(false);
+    }
   }
 
   return (
@@ -472,14 +666,31 @@ export function AnalysisWorkspace() {
           {viewState === "analyzing" && (
             <LoadingState currentStage={progressStage} />
           )}
-          {viewState === "error" && (
-            <ErrorState message={error} onRetry={() => setViewState("idle")} />
+          {viewState === "error" && error && (
+            <ErrorState error={error} onRetry={() => setViewState("idle")} />
           )}
           {viewState === "success" && result && (
-            <ReportView result={result} onReset={reset} />
+            <ReportView
+              result={result}
+              isDemo={isDemo}
+              onOpenChat={openChat}
+              onReset={reset}
+            />
           )}
         </section>
       </section>
+
+      {chatOpen && result && (
+        <DatasetChat
+          result={result}
+          entries={chatMessages}
+          error={chatError}
+          busy={chatBusy}
+          isDemo={isDemo}
+          onClose={() => setChatOpen(false)}
+          onSend={sendChatMessage}
+        />
+      )}
 
       <footer className="footer">
         <span>Учебный проект по агентной аналитике данных</span>
@@ -589,19 +800,31 @@ function LoadingState({ currentStage }: { currentStage: number }) {
 }
 
 function ErrorState({
-  message,
+  error,
   onRetry
 }: {
-  message: string;
+  error: UiError;
   onRetry: () => void;
 }) {
+  const isTemporary =
+    error.code === "RATE_LIMITED" || error.code === "PROVIDER_BUSY";
+
   return (
     <div className="errorState">
-      <span className="errorIcon">
-        <Warning size={34} weight="duotone" />
+      <span className={`errorIcon ${isTemporary ? "isTemporary" : ""}`}>
+        {isTemporary ? (
+          <Clock size={34} weight="duotone" />
+        ) : (
+          <Warning size={34} weight="duotone" />
+        )}
       </span>
-      <h2>Анализ остановлен</h2>
-      <p>{message}</p>
+      <h2>{isTemporary ? "Нужна короткая пауза" : "Анализ остановлен"}</h2>
+      <p>{error.error}</p>
+      {isTemporary && (
+        <span className="retryHint">
+          Обычно можно повторить через {error.retryAfterSeconds ?? 60} секунд.
+        </span>
+      )}
       <button className="secondaryButton" type="button" onClick={onRetry}>
         Вернуться к форме
       </button>
@@ -611,9 +834,13 @@ function ErrorState({
 
 function ReportView({
   result,
+  isDemo,
+  onOpenChat,
   onReset
 }: {
   result: AnalysisResponse;
+  isDemo: boolean;
+  onOpenChat: () => void;
   onReset: () => void;
 }) {
   return (
@@ -765,6 +992,25 @@ function ReportView({
         </div>
       </section>
 
+      <button className="chatLauncher" type="button" onClick={onOpenChat}>
+        <span className="chatLauncherIcon" aria-hidden="true">
+          <ChatCircleDots size={26} weight="duotone" />
+        </span>
+        <span className="chatLauncherCopy">
+          <strong>Продолжить анализ в чате</strong>
+          <small>
+            {isDemo
+              ? "Откройте демонстрацию диалога по этому отчету."
+              : "Задайте вопрос — агент снова запустит Python по этому датасету."}
+          </small>
+        </span>
+        <span className="chatLauncherMeta">
+          <span className="liveDot" />
+          {isDemo ? "Демо" : "Сессия активна"}
+          <ArrowRight size={18} weight="bold" />
+        </span>
+      </button>
+
       <div className="reportFootnote">
         <Info size={18} weight="duotone" />
         <span>
@@ -773,6 +1019,301 @@ function ReportView({
         </span>
       </div>
     </article>
+  );
+}
+
+function DatasetChat({
+  result,
+  entries,
+  error,
+  busy,
+  isDemo,
+  onClose,
+  onSend
+}: {
+  result: AnalysisResponse;
+  entries: ChatEntry[];
+  error: UiError | null;
+  busy: boolean;
+  isDemo: boolean;
+  onClose: () => void;
+  onSend: (message: string) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState("");
+  const conversationRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = conversationRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: "smooth"
+    });
+  }, [busy, entries]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message || busy) {
+      return;
+    }
+    setDraft("");
+    await onSend(message);
+  }
+
+  return (
+    <div
+      className="chatOverlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Чат по датасету ${result.meta.fileName}`}
+    >
+      <header className="chatHeader">
+        <button
+          className="chatBackButton"
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+        >
+          <ArrowLeft size={19} weight="bold" />
+          Вернуться к отчету
+        </button>
+        <div className="chatDatasetTitle">
+          <span className="chatDatasetIcon">
+            <FileCsv size={20} weight="duotone" />
+          </span>
+          <span>
+            <strong>{result.meta.fileName}</strong>
+            <small>{isDemo ? "демонстрационный диалог" : "датасет подключен"}</small>
+          </span>
+        </div>
+        <div className="chatSessionState">
+          <span className="liveDot" />
+          <span>
+            {isDemo
+              ? "Демо"
+              : formatSessionExpiry(result.meta.sessionExpiresAt)}
+          </span>
+        </div>
+      </header>
+
+      <div className="chatLayout">
+        <aside className="chatContext">
+          <div>
+            <p className="kicker">Контекст отчета</p>
+            <h2>{result.report.title}</h2>
+            <p>{result.report.summary}</p>
+          </div>
+
+          <div className="chatMetricList">
+            {result.report.metrics.slice(0, 4).map((metric) => (
+              <div key={`${metric.label}-${metric.value}`}>
+                <span>{metric.label}</span>
+                <strong>{metric.value}</strong>
+              </div>
+            ))}
+          </div>
+
+          <div className="chatAgentStatus">
+            <Robot size={22} weight="duotone" />
+            <span>
+              <strong>{isDemo ? "Интерфейс демо" : "Python подключен"}</strong>
+              <small>
+                {isDemo
+                  ? "Ответы показывают сценарий работы."
+                  : "Каждый ответ проверяется новым вычислением."}
+              </small>
+            </span>
+          </div>
+        </aside>
+
+        <section className="chatConversation">
+          <div className="chatMessages" ref={conversationRef}>
+            <div className="chatConversationIntro">
+              <span>
+                <ChatCircleDots size={22} weight="duotone" />
+              </span>
+              <div>
+                <strong>Диалог по конкретному датасету</strong>
+                <p>
+                  Агент видит отчет и продолжает исследовать тот же файл через
+                  Python-интерпретатор.
+                </p>
+              </div>
+            </div>
+
+            {entries.map((entry) => (
+              <article
+                className={`chatMessage ${entry.role}`}
+                key={entry.id}
+              >
+                <div className="chatAvatar" aria-hidden="true">
+                  {entry.role === "assistant" ? (
+                    <Sparkle size={17} weight="fill" />
+                  ) : (
+                    "Вы"
+                  )}
+                </div>
+                <div className="chatBubble">
+                  <p>{entry.content}</p>
+                  {entry.evidence && entry.evidence.length > 0 && (
+                    <ul className="chatEvidence">
+                      {entry.evidence.map((item) => (
+                        <li key={item}>
+                          <CheckCircle size={16} weight="fill" />
+                          <span>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {entry.charts && entry.charts.length > 0 && (
+                    <div className="chatCharts">
+                      {entry.charts.map((chart) => (
+                        <figure key={chart.id}>
+                          <Image
+                            src={`data:${chart.mimeType};base64,${chart.data}`}
+                            width={960}
+                            height={600}
+                            unoptimized
+                            alt={chart.caption}
+                          />
+                          <figcaption>{chart.caption}</figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  )}
+                  {entry.trace && entry.trace.length > 0 && (
+                    <details className="chatTrace">
+                      <summary>
+                        <Code size={16} />
+                        Проверить вычисления: {entry.trace.length}
+                      </summary>
+                      <div>
+                        {entry.trace.map((trace) => (
+                          <details key={`${entry.id}-${trace.step}`}>
+                            <summary>{trace.purpose}</summary>
+                            <pre>
+                              <code>{trace.code}</code>
+                            </pre>
+                            {trace.stdout && (
+                              <pre>
+                                <code>{trace.stdout}</code>
+                              </pre>
+                            )}
+                          </details>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  <time dateTime={entry.createdAt}>
+                    {formatMessageTime(entry.createdAt)}
+                  </time>
+                </div>
+              </article>
+            ))}
+
+            {busy && (
+              <article className="chatMessage assistant isThinking">
+                <div className="chatAvatar" aria-hidden="true">
+                  <Sparkle size={17} weight="fill" />
+                </div>
+                <div className="chatBubble">
+                  <span className="thinkingDots" aria-label="Агент вычисляет">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  <small>Агент пишет и запускает Python…</small>
+                </div>
+              </article>
+            )}
+          </div>
+
+          <div className="chatComposerArea">
+            {error && <ChatErrorBanner error={error} />}
+
+            {entries.length <= 1 && !busy && (
+              <div className="chatSuggestions" aria-label="Примеры вопросов">
+                {chatSuggestions.map((suggestion) => (
+                  <button
+                    type="button"
+                    key={suggestion}
+                    onClick={() => void onSend(suggestion)}
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <form className="chatComposer" onSubmit={submit}>
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing
+                  ) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+                maxLength={2_000}
+                rows={1}
+                placeholder="Спросите о причинах, аномалиях или нужном срезе…"
+                aria-label="Вопрос по датасету"
+                disabled={busy}
+              />
+              <button
+                type="submit"
+                disabled={busy || !draft.trim()}
+                aria-label="Отправить вопрос"
+              >
+                <PaperPlaneTilt size={20} weight="fill" />
+              </button>
+            </form>
+            <p className="chatDisclaimer">
+              {isDemo
+                ? "Демо-ответы не обращаются к API."
+                : "Ответ основан на новом запуске Python. Сессия продлевается после каждого вопроса."}
+            </p>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function ChatErrorBanner({ error }: { error: UiError }) {
+  const isTemporary =
+    error.code === "RATE_LIMITED" || error.code === "PROVIDER_BUSY";
+
+  return (
+    <div className={`chatErrorBanner ${isTemporary ? "temporary" : ""}`}>
+      {isTemporary ? (
+        <Clock size={20} weight="duotone" />
+      ) : (
+        <Warning size={20} weight="duotone" />
+      )}
+      <span>
+        <strong>
+          {isTemporary
+            ? "Gemini временно уперлась в лимит"
+            : error.code === "SESSION_EXPIRED"
+              ? "Сессия датасета завершилась"
+              : "Не удалось получить ответ"}
+        </strong>
+        <small>
+          {error.error}
+          {isTemporary &&
+            ` Повторите примерно через ${error.retryAfterSeconds ?? 60} секунд.`}
+        </small>
+      </span>
+    </div>
   );
 }
 
@@ -806,4 +1347,96 @@ function formatDuration(milliseconds: number) {
   return `${Math.floor(milliseconds / 60_000)} мин ${Math.round(
     (milliseconds % 60_000) / 1000
   )} с`;
+}
+
+async function readJsonResponse<T>(
+  response: Response
+): Promise<T | ApiErrorResponse> {
+  try {
+    return (await response.json()) as T | ApiErrorResponse;
+  } catch {
+    return {
+      error: response.ok
+        ? "Backend вернул ответ в неизвестном формате."
+        : "Backend временно недоступен. Повторите запрос позже.",
+      code: response.ok ? "INTERNAL_ERROR" : "AGENT_FAILED",
+      provider: "server"
+    };
+  }
+}
+
+function isApiError(value: unknown): value is ApiErrorResponse {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "error" in value &&
+    typeof value.error === "string" &&
+    "code" in value
+  );
+}
+
+function apiErrorFromPayload(
+  payload: unknown,
+  fallback: string
+): ApiClientError {
+  if (isApiError(payload)) {
+    return new ApiClientError(payload);
+  }
+  return new ApiClientError({
+    error: fallback,
+    code: "AGENT_FAILED",
+    provider: "server"
+  });
+}
+
+function toUiError(error: unknown): UiError {
+  if (error instanceof ApiClientError) {
+    return error.details;
+  }
+  if (error instanceof TypeError) {
+    return {
+      error:
+        "Не удалось связаться с backend. Проверьте, что Render-сервис запущен.",
+      code: "AGENT_FAILED",
+      provider: "server"
+    };
+  }
+  return {
+    error:
+      error instanceof Error
+        ? error.message
+        : "Не удалось выполнить запрос.",
+    code: "AGENT_FAILED",
+    provider: "server"
+  };
+}
+
+function createClientId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function formatMessageTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : new Intl.DateTimeFormat("ru", {
+        hour: "2-digit",
+        minute: "2-digit"
+      }).format(date);
+}
+
+function formatSessionExpiry(value?: string) {
+  if (!value) {
+    return "Сессия активна";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Сессия активна";
+  }
+  return `Активна до ${new Intl.DateTimeFormat("ru", {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date)}`;
 }
