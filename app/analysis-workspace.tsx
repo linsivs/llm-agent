@@ -192,6 +192,7 @@ export function AnalysisWorkspace() {
   const [error, setError] = useState<UiError | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const [progressStage, setProgressStage] = useState(0);
+  const [analysisSeconds, setAnalysisSeconds] = useState(0);
   const [isDemo, setIsDemo] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatEntry[]>([]);
@@ -203,13 +204,19 @@ export function AnalysisWorkspace() {
       return;
     }
 
-    const timer = window.setInterval(() => {
+    const stageTimer = window.setInterval(() => {
       setProgressStage((current) =>
         Math.min(current + 1, progressStages.length - 1)
       );
     }, 3_800);
+    const secondsTimer = window.setInterval(() => {
+      setAnalysisSeconds((current) => current + 1);
+    }, 1_000);
 
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(stageTimer);
+      window.clearInterval(secondsTimer);
+    };
   }, [viewState]);
 
   useEffect(() => {
@@ -303,6 +310,7 @@ export function AnalysisWorkspace() {
 
     setViewState("analyzing");
     setProgressStage(0);
+    setAnalysisSeconds(0);
     setError(null);
     setResult(null);
     setIsDemo(false);
@@ -353,6 +361,7 @@ export function AnalysisWorkspace() {
     setError(null);
     setViewState("idle");
     setProgressStage(0);
+    setAnalysisSeconds(0);
     setIsDemo(false);
     setChatOpen(false);
     setChatMessages([]);
@@ -708,7 +717,10 @@ export function AnalysisWorkspace() {
         >
           {viewState === "idle" && <EmptyState />}
           {viewState === "analyzing" && (
-            <LoadingState currentStage={progressStage} />
+            <LoadingState
+              currentStage={progressStage}
+              elapsedSeconds={analysisSeconds}
+            />
           )}
           {viewState === "error" && error && (
             <ErrorState error={error} onRetry={() => setViewState("idle")} />
@@ -797,7 +809,19 @@ function EmptyState() {
   );
 }
 
-function LoadingState({ currentStage }: { currentStage: number }) {
+function LoadingState({
+  currentStage,
+  elapsedSeconds
+}: {
+  currentStage: number;
+  elapsedSeconds: number;
+}) {
+  const stageDurationSeconds = 4;
+  const currentStageSeconds = Math.max(
+    0,
+    elapsedSeconds - currentStage * stageDurationSeconds
+  );
+
   return (
     <div className="loadingState">
       <div className="agentPulse" aria-hidden="true">
@@ -830,7 +854,14 @@ function LoadingState({ currentStage }: { currentStage: number }) {
                 index + 1
               )}
             </span>
-            <span>{stage}</span>
+            <span className="progressStageLabel">{stage}</span>
+            <span className="progressTime">
+              {index < currentStage
+                ? `${stageDurationSeconds} с`
+                : index === currentStage
+                  ? `${currentStageSeconds} с`
+                  : "—"}
+            </span>
           </li>
         ))}
       </ol>

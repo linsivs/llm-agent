@@ -605,11 +605,28 @@ textarea:focus {
 .progressList li {
   min-height: 44px;
   display: grid;
-  grid-template-columns: 30px 1fr;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center;
   gap: 0.7rem;
   color: var(--faint);
   font-size: 0.82rem;
+}
+
+.progressStageLabel {
+  min-width: 0;
+}
+
+.progressTime {
+  min-width: 42px;
+  padding: 0.28rem 0.42rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--faint);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .progressIndex {
@@ -632,12 +649,24 @@ textarea:focus {
   color: var(--success);
 }
 
+.progressList .isComplete .progressTime {
+  border-color: var(--success-soft);
+  background: var(--success-soft);
+  color: var(--success);
+}
+
 .progressList .isCurrent {
   color: var(--foreground);
   font-weight: 630;
 }
 
 .progressList .isCurrent .progressIndex {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.progressList .isCurrent .progressTime {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-strong);
