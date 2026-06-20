@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# Next.js
+.next/
+out/
+
+# Tests and coverage
+coverage/
+*.tsbuildinfo
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# Local references must never be committed
+.refs/
+
+# Logs and editor files
+*.log
+.DS_Store
+.idea/
+.vscode/
