@@ -42,30 +42,35 @@ export class GeminiRequestError extends Error {
   }
 }
 
-const tools = [
+export type GeminiTool = {
+  functionDeclarations: Array<Record<string, unknown>>;
+};
+
+const runPythonDeclaration = {
+  name: "run_python",
+  description:
+    "Execute Python in the isolated E2B interpreter. Use pandas to inspect and analyze the dataset. Use matplotlib or seaborn and plt.show() when a chart is useful.",
+  parameters: {
+    type: "OBJECT",
+    properties: {
+      purpose: {
+        type: "STRING",
+        description: "Short Russian explanation of what this execution checks."
+      },
+      code: {
+        type: "STRING",
+        description:
+          "Complete Python code. The dataset path is available in DATASET_PATH."
+      }
+    },
+    required: ["purpose", "code"]
+  }
+};
+
+export const analysisTools: GeminiTool[] = [
   {
     functionDeclarations: [
-      {
-        name: "run_python",
-        description:
-          "Execute Python in the isolated E2B interpreter. Use pandas to inspect and analyze the dataset. Use matplotlib or seaborn and plt.show() when a chart is useful.",
-        parameters: {
-          type: "OBJECT",
-          properties: {
-            purpose: {
-              type: "STRING",
-              description:
-                "Short Russian explanation of what this execution checks."
-            },
-            code: {
-              type: "STRING",
-              description:
-                "Complete Python code. The dataset path is available in DATASET_PATH."
-            }
-          },
-          required: ["purpose", "code"]
-        }
-      },
+      runPythonDeclaration,
       {
         name: "submit_report",
         description:
@@ -125,16 +130,48 @@ const tools = [
   }
 ];
 
+export const chatTools: GeminiTool[] = [
+  {
+    functionDeclarations: [
+      runPythonDeclaration,
+      {
+        name: "submit_answer",
+        description:
+          "Submit a concise Russian answer grounded in the Python result.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            answer: {
+              type: "STRING",
+              description:
+                "Direct answer to the user's question in Russian with concrete values."
+            },
+            evidence: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description:
+                "One to six short evidence statements based on tool output."
+            }
+          },
+          required: ["answer", "evidence"]
+        }
+      }
+    ]
+  }
+];
+
 export async function generateAgentTurn({
   apiKey,
   model,
   systemInstruction,
-  contents
+  contents,
+  tools = analysisTools
 }: {
   apiKey: string;
   model: string;
   systemInstruction: string;
   contents: GeminiContent[];
+  tools?: GeminiTool[];
 }): Promise<GeminiContent> {
   const url = `${GEMINI_API_BASE}/${encodeURIComponent(model)}:generateContent`;
   let lastError: GeminiRequestError | undefined;
@@ -196,4 +233,3 @@ export async function generateAgentTurn({
 
   throw lastError ?? new GeminiRequestError("Gemini API недоступна.", 500, true);
 }
-

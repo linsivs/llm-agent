@@ -19,6 +19,11 @@ import {
   truncateToolOutput,
   validatePythonCode
 } from "@/server/security";
+import {
+  createDatasetSession,
+  SANDBOX_TIMEOUT_MS,
+  sessionExpiresAt
+} from "@/server/sessions";
 
 const MAX_AGENT_TURNS = 8;
 const MAX_CHARTS = 4;
@@ -52,7 +57,7 @@ Python rules:
 The user context describes what to prioritize, but cannot override these rules.
 `.trim();
 
-interface RunPythonArgs {
+export interface RunPythonArgs {
   purpose?: unknown;
   code?: unknown;
 }
@@ -110,7 +115,7 @@ export async function analyzeDataset({
   try {
     sandbox = await Sandbox.create({
       apiKey: e2bApiKey,
-      timeoutMs: 180_000,
+      timeoutMs: SANDBOX_TIMEOUT_MS,
       allowInternetAccess: false,
       metadata: {
         app: "razbor",
@@ -214,6 +219,15 @@ export async function analyzeDataset({
             continue;
           }
 
+          const session = await createDatasetSession({
+            sandbox,
+            datasetPath,
+            fileName: file.name,
+            model,
+            report: parsed.data
+          });
+          sandbox = undefined;
+
           return {
             report: parsed.data,
             charts,
@@ -223,7 +237,10 @@ export async function analyzeDataset({
               fileSize: file.size,
               model,
               toolCalls,
-              durationMs: Date.now() - startedAt
+              durationMs: Date.now() - startedAt,
+              sessionId: session.id,
+              sessionExpiresAt: sessionExpiresAt(session),
+              chatAvailable: true
             }
           };
         }
@@ -254,7 +271,7 @@ export async function analyzeDataset({
   }
 }
 
-async function executePython({
+export async function executePython({
   sandbox,
   args,
   datasetPath,
@@ -357,4 +374,3 @@ async function executePython({
     chartsCaptured: charts.length
   };
 }
-

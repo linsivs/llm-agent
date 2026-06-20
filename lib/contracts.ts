@@ -23,6 +23,26 @@ export const reportSchema = z.object({
 
 export type AnalysisReport = z.infer<typeof reportSchema>;
 
+export const chatAnswerSchema = z.object({
+  answer: z.string().min(1).max(4_000),
+  evidence: z.array(z.string().min(1).max(360)).min(1).max(6)
+});
+
+export const chatRequestSchema = z.object({
+  sessionId: z.string().uuid(),
+  message: z.string().trim().min(1).max(2_000)
+});
+
+export type ChatRole = "user" | "assistant";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  createdAt: string;
+  evidence?: string[];
+}
+
 export type TraceStatus = "success" | "error" | "blocked";
 
 export interface AgentTrace {
@@ -52,6 +72,21 @@ export interface AnalysisResponse {
     model: string;
     toolCalls: number;
     durationMs: number;
+    sessionId?: string;
+    sessionExpiresAt?: string;
+    chatAvailable?: boolean;
+  };
+}
+
+export interface ChatResponse {
+  message: ChatMessage;
+  charts: AnalysisChart[];
+  trace: AgentTrace[];
+  meta: {
+    model: string;
+    toolCalls: number;
+    durationMs: number;
+    sessionExpiresAt: string;
   };
 }
 
@@ -63,7 +98,10 @@ export interface ApiErrorResponse {
     | "UNSUPPORTED_FILE"
     | "NOT_CONFIGURED"
     | "RATE_LIMITED"
+    | "PROVIDER_BUSY"
+    | "SESSION_EXPIRED"
     | "AGENT_FAILED"
     | "INTERNAL_ERROR";
+  provider?: "gemini" | "e2b" | "server";
+  retryAfterSeconds?: number;
 }
-

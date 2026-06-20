@@ -3,11 +3,16 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 
-import type { ApiErrorResponse } from "@/lib/contracts";
+import {
+  chatRequestSchema,
+  type ApiErrorResponse
+} from "@/lib/contracts";
 import { analyzeDataset } from "@/server/agent";
-import { GeminiRequestError } from "@/server/gemini";
+import { mapApiError } from "@/server/api-errors";
+import { chatWithDataset } from "@/server/chat";
 import { consumeRateLimit } from "@/server/rate-limit";
 import { validateFileSignature } from "@/server/security";
+import { closeDatasetSession } from "@/server/sessions";
 
 const app = new Hono();
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -22,7 +27,7 @@ app.use(
   cors({
     origin: (origin) =>
       allowedOrigins.includes(origin) ? origin : undefined,
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
     allowHeaders: ["Content-Type"],
     maxAge: 86400
   })
@@ -44,6 +49,37 @@ app.use("/analyze", async (context, next) => {
       {
         error: "Слишком много запусков анализа. Повторите позже.",
         code: "RATE_LIMITED"
+      },
+      429
+    );
+  }
+
+  await next();
+});
+
+app.use("/chat", async (context, next) => {
+  const forwardedFor = context.req.header("x-forwarded-for");
+  const clientKey = `${
+    forwardedFor?.split(",")[0]?.trim() ||
+    context.req.header("x-real-ip") ||
+    "local-client"
+  }:chat`;
+  const rateLimit = consumeRateLimit({
+    key: clientKey,
+    maxRequests: 20
+  });
+
+  context.header("X-RateLimit-Remaining", String(rateLimit.remaining));
+
+  if (!rateLimit.allowed) {
+    context.header("Retry-After", String(rateLimit.retryAfterSeconds));
+    return context.json<ApiErrorResponse>(
+      {
+        error:
+          "Слишком много сообщений. Подождите минуту и продолжите диалог.",
+        code: "RATE_LIMITED",
+        provider: "server",
+        retryAfterSeconds: rateLimit.retryAfterSeconds
       },
       429
     );
@@ -162,31 +198,97 @@ app.post(
       return context.json(result);
     } catch (error) {
       console.error("Analysis failed", error);
-
-      if (error instanceof GeminiRequestError && error.status === 429) {
-        return context.json<ApiErrorResponse>(
-          {
-            error:
-              "Бесплатный лимит Gemini временно исчерпан. Повторите позже.",
-            code: "RATE_LIMITED"
-          },
-          429
+      const mapped = mapApiError(error);
+      if (mapped.body.retryAfterSeconds) {
+        context.header(
+          "Retry-After",
+          String(mapped.body.retryAfterSeconds)
         );
       }
-
-      return context.json<ApiErrorResponse>(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Агент не смог завершить анализ.",
-          code: "AGENT_FAILED"
-        },
-        500
-      );
+      return context.json(mapped.body, mapped.status);
     }
   }
 );
+
+app.post(
+  "/chat",
+  bodyLimit({
+    maxSize: 16 * 1024,
+    onError: (context) =>
+      context.json<ApiErrorResponse>(
+        {
+          error: "Сообщение слишком большое.",
+          code: "BAD_REQUEST",
+          provider: "server"
+        },
+        413
+      )
+  }),
+  async (context) => {
+    const geminiApiKey = process.env.GEMINI_API_KEY;
+    if (!geminiApiKey) {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Backend не настроен. Добавьте GEMINI_API_KEY.",
+          code: "NOT_CONFIGURED",
+          provider: "server"
+        },
+        503
+      );
+    }
+
+    let payload: unknown;
+    try {
+      payload = await context.req.json();
+    } catch {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Передайте sessionId и текст сообщения в JSON.",
+          code: "BAD_REQUEST",
+          provider: "server"
+        },
+        400
+      );
+    }
+
+    const parsed = chatRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      return context.json<ApiErrorResponse>(
+        {
+          error:
+            "Сессия или текст сообщения имеют неверный формат.",
+          code: "BAD_REQUEST",
+          provider: "server"
+        },
+        400
+      );
+    }
+
+    try {
+      const result = await chatWithDataset({
+        sessionId: parsed.data.sessionId,
+        question: parsed.data.message,
+        geminiApiKey
+      });
+      return context.json(result);
+    } catch (error) {
+      console.error("Chat failed", error);
+      const mapped = mapApiError(error);
+      if (mapped.body.retryAfterSeconds) {
+        context.header(
+          "Retry-After",
+          String(mapped.body.retryAfterSeconds)
+        );
+      }
+      return context.json(mapped.body, mapped.status);
+    }
+  }
+);
+
+app.delete("/sessions/:sessionId", async (context) => {
+  await closeDatasetSession(context.req.param("sessionId"));
+  return context.body(null, 204);
+});
 
 app.notFound((context) =>
   context.json<ApiErrorResponse>(
