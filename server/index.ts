@@ -4,7 +4,8 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 
 import {
-  chatRequestSchema,
+  chatHistorySchema,
+  reportSchema,
   type ApiErrorResponse
 } from "@/lib/contracts";
 import { analyzeDataset } from "@/server/agent";
@@ -12,7 +13,6 @@ import { mapApiError } from "@/server/api-errors";
 import { chatWithDataset } from "@/server/chat";
 import { consumeRateLimit } from "@/server/rate-limit";
 import { validateFileSignature } from "@/server/security";
-import { closeDatasetSession } from "@/server/sessions";
 
 const app = new Hono();
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -213,12 +213,12 @@ app.post(
 app.post(
   "/chat",
   bodyLimit({
-    maxSize: 16 * 1024,
+    maxSize: MAX_UPLOAD_BYTES + 128 * 1024,
     onError: (context) =>
       context.json<ApiErrorResponse>(
         {
-          error: "Сообщение слишком большое.",
-          code: "BAD_REQUEST",
+          error: "Файл или контекст чата превышает допустимый размер.",
+          code: "FILE_TOO_LARGE",
           provider: "server"
         },
         413
@@ -226,10 +226,12 @@ app.post(
   }),
   async (context) => {
     const geminiApiKey = process.env.GEMINI_API_KEY;
-    if (!geminiApiKey) {
+    const e2bApiKey = process.env.E2B_API_KEY;
+    if (!geminiApiKey || !e2bApiKey) {
       return context.json<ApiErrorResponse>(
         {
-          error: "Backend не настроен. Добавьте GEMINI_API_KEY.",
+          error:
+            "Backend не настроен. Добавьте GEMINI_API_KEY и E2B_API_KEY.",
           code: "NOT_CONFIGURED",
           provider: "server"
         },
@@ -237,13 +239,13 @@ app.post(
       );
     }
 
-    let payload: unknown;
+    let form: FormData;
     try {
-      payload = await context.req.json();
+      form = await context.req.formData();
     } catch {
       return context.json<ApiErrorResponse>(
         {
-          error: "Передайте sessionId и текст сообщения в JSON.",
+          error: "Передайте файл, вопрос и контекст отчета.",
           code: "BAD_REQUEST",
           provider: "server"
         },
@@ -251,12 +253,97 @@ app.post(
       );
     }
 
-    const parsed = chatRequestSchema.safeParse(payload);
-    if (!parsed.success) {
+    const file = form.get("file");
+    const message = form.get("message");
+    const reportValue = form.get("report");
+    const historyValue = form.get("history");
+
+    if (
+      !(file instanceof File) ||
+      typeof message !== "string" ||
+      typeof reportValue !== "string" ||
+      typeof historyValue !== "string"
+    ) {
       return context.json<ApiErrorResponse>(
         {
           error:
-            "Сессия или текст сообщения имеют неверный формат.",
+            "Для продолжения анализа нужен исходный файл, вопрос и отчет.",
+          code: "BAD_REQUEST",
+          provider: "server"
+        },
+        400
+      );
+    }
+
+    const extension = file.name
+      .toLowerCase()
+      .slice(file.name.lastIndexOf("."));
+    if (!acceptedExtensions.includes(extension)) {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Поддерживаются только файлы CSV и XLSX.",
+          code: "UNSUPPORTED_FILE",
+          provider: "server"
+        },
+        415
+      );
+    }
+
+    if (file.size === 0 || file.size > MAX_UPLOAD_BYTES) {
+      return context.json<ApiErrorResponse>(
+        {
+          error:
+            file.size === 0
+              ? "Загруженный файл пуст."
+              : "Файл превышает лимит 10 МБ.",
+          code: file.size === 0 ? "BAD_REQUEST" : "FILE_TOO_LARGE",
+          provider: "server"
+        },
+        file.size === 0 ? 400 : 413
+      );
+    }
+
+    const signature = new Uint8Array(
+      await file.slice(0, 4_096).arrayBuffer()
+    );
+    if (
+      !validateFileSignature(
+        signature,
+        extension === ".xlsx" ? ".xlsx" : ".csv"
+      )
+    ) {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Содержимое файла не соответствует расширению.",
+          code: "UNSUPPORTED_FILE",
+          provider: "server"
+        },
+        415
+      );
+    }
+
+    let parsedReport: unknown;
+    let parsedHistory: unknown;
+    try {
+      parsedReport = JSON.parse(reportValue);
+      parsedHistory = JSON.parse(historyValue);
+    } catch {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Контекст отчета имеет неверный формат.",
+          code: "BAD_REQUEST",
+          provider: "server"
+        },
+        400
+      );
+    }
+
+    const report = reportSchema.safeParse(parsedReport);
+    const history = chatHistorySchema.safeParse(parsedHistory);
+    if (!report.success || !history.success) {
+      return context.json<ApiErrorResponse>(
+        {
+          error: "Контекст отчета или история чата не прошли проверку.",
           code: "BAD_REQUEST",
           provider: "server"
         },
@@ -266,9 +353,13 @@ app.post(
 
     try {
       const result = await chatWithDataset({
-        sessionId: parsed.data.sessionId,
-        question: parsed.data.message,
-        geminiApiKey
+        file,
+        question: message,
+        originalReport: report.data,
+        conversation: history.data,
+        geminiApiKey,
+        e2bApiKey,
+        model: process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite"
       });
       return context.json(result);
     } catch (error) {
@@ -284,11 +375,6 @@ app.post(
     }
   }
 );
-
-app.delete("/sessions/:sessionId", async (context) => {
-  await closeDatasetSession(context.req.param("sessionId"));
-  return context.body(null, 204);
-});
 
 app.notFound((context) =>
   context.json<ApiErrorResponse>(

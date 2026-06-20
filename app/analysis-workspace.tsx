@@ -301,7 +301,6 @@ export function AnalysisWorkspace() {
       return;
     }
 
-    releaseSession();
     setViewState("analyzing");
     setProgressStage(0);
     setError(null);
@@ -338,7 +337,6 @@ export function AnalysisWorkspace() {
   }
 
   function showDemo() {
-    releaseSession();
     setResult(demoResult);
     setViewState("success");
     setError(null);
@@ -349,7 +347,6 @@ export function AnalysisWorkspace() {
   }
 
   function reset() {
-    releaseSession();
     setFile(null);
     setInstructions("");
     setResult(null);
@@ -379,18 +376,6 @@ export function AnalysisWorkspace() {
     });
   }
 
-  function releaseSession() {
-    const sessionId = result?.meta.sessionId;
-    if (!sessionId || isDemo) {
-      return;
-    }
-
-    void fetch(`${API_URL}/sessions/${sessionId}`, {
-      method: "DELETE",
-      keepalive: true
-    }).catch(() => undefined);
-  }
-
   function openChat() {
     if (!result) {
       return;
@@ -405,7 +390,7 @@ export function AnalysisWorkspace() {
               role: "assistant",
               content: isDemo
                 ? "Это демонстрационный режим интерфейса. Задайте вопрос по отчету — я покажу, как будет выглядеть продолжение анализа."
-                : "Отчет готов, а Python-сессия с датасетом еще активна. Задайте уточняющий вопрос — я выполню новые вычисления по тому же файлу.",
+                : "Отчет готов, а исходный датасет прикреплен к этому диалогу. Задайте уточняющий вопрос — я запущу новый Python-анализ по тому же файлу.",
               createdAt: new Date().toISOString()
             }
           ]
@@ -451,21 +436,37 @@ export function AnalysisWorkspace() {
       return;
     }
 
-    const sessionId = result.meta.sessionId;
-    if (!sessionId) {
+    if (!file) {
       setChatError({
-        error: "Сессия датасета недоступна. Запустите анализ заново.",
-        code: "SESSION_EXPIRED"
+        error:
+          "Исходный файл больше недоступен в браузере. Загрузите его повторно.",
+        code: "BAD_REQUEST"
       });
       setChatBusy(false);
       return;
     }
 
     try {
+      const body = new FormData();
+      body.append("file", file);
+      body.append("message", cleanMessage);
+      body.append("report", JSON.stringify(result.report));
+      body.append(
+        "history",
+        JSON.stringify(
+          chatMessages
+            .filter((entry) => entry.id !== "chat-intro")
+            .slice(-16)
+            .map((entry) => ({
+              role: entry.role,
+              content: entry.content
+            }))
+        )
+      );
+
       const response = await fetch(`${API_URL}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message: cleanMessage })
+        body
       });
       const payload = await readJsonResponse<ChatResponse>(response);
 
@@ -484,17 +485,6 @@ export function AnalysisWorkspace() {
           trace: payload.trace
         }
       ]);
-      setResult((current) =>
-        current
-          ? {
-              ...current,
-              meta: {
-                ...current.meta,
-                sessionExpiresAt: payload.meta.sessionExpiresAt
-              }
-            }
-          : current
-      );
     } catch (requestError) {
       setChatError(toUiError(requestError));
     } finally {
@@ -1006,7 +996,7 @@ function ReportView({
         </span>
         <span className="chatLauncherMeta">
           <span className="liveDot" />
-          {isDemo ? "Демо" : "Сессия активна"}
+          {isDemo ? "Демо" : "Файл готов"}
           <ArrowRight size={18} weight="bold" />
         </span>
       </button>
@@ -1092,9 +1082,7 @@ function DatasetChat({
         <div className="chatSessionState">
           <span className="liveDot" />
           <span>
-            {isDemo
-              ? "Демо"
-              : formatSessionExpiry(result.meta.sessionExpiresAt)}
+            {isDemo ? "Демо" : "Файл прикреплен"}
           </span>
         </div>
       </header>
@@ -1123,7 +1111,7 @@ function DatasetChat({
               <small>
                 {isDemo
                   ? "Ответы показывают сценарий работы."
-                  : "Каждый ответ проверяется новым вычислением."}
+                  : "Для каждого ответа запускается новая песочница."}
               </small>
             </span>
           </div>
@@ -1279,7 +1267,7 @@ function DatasetChat({
             <p className="chatDisclaimer">
               {isDemo
                 ? "Демо-ответы не обращаются к API."
-                : "Ответ основан на новом запуске Python. Сессия продлевается после каждого вопроса."}
+                : "Исходный файл отправляется заново и анализируется в новой Python-песочнице."}
             </p>
           </div>
         </section>
@@ -1303,9 +1291,7 @@ function ChatErrorBanner({ error }: { error: UiError }) {
         <strong>
           {isTemporary
             ? "Gemini временно уперлась в лимит"
-            : error.code === "SESSION_EXPIRED"
-              ? "Сессия датасета завершилась"
-              : "Не удалось получить ответ"}
+            : "Не удалось получить ответ"}
         </strong>
         <small>
           {error.error}
@@ -1425,18 +1411,4 @@ function formatMessageTime(value: string) {
         hour: "2-digit",
         minute: "2-digit"
       }).format(date);
-}
-
-function formatSessionExpiry(value?: string) {
-  if (!value) {
-    return "Сессия активна";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "Сессия активна";
-  }
-  return `Активна до ${new Intl.DateTimeFormat("ru", {
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date)}`;
 }

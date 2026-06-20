@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { reportSchema } from "@/lib/contracts";
+import { chatHistorySchema, reportSchema } from "@/lib/contracts";
 
 describe("reportSchema", () => {
   it("accepts a complete evidence-based report", () => {
@@ -36,5 +36,27 @@ describe("reportSchema", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+});
+
+describe("chatHistorySchema", () => {
+  it("accepts a bounded user-assistant conversation", () => {
+    const result = chatHistorySchema.safeParse([
+      { role: "user", content: "Сравни регионы" },
+      { role: "assistant", content: "Восток растет быстрее." }
+    ]);
+
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects oversized chat history", () => {
+    const result = chatHistorySchema.safeParse(
+      Array.from({ length: 17 }, (_, index) => ({
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: `Сообщение ${index}`
+      }))
+    );
+
+    expect(result.success).toBe(false);
   });
 });

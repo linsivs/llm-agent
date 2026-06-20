@@ -1,24 +1,12 @@
 import type { ApiErrorResponse } from "@/lib/contracts";
 import { GeminiRequestError } from "@/server/gemini";
-import { SessionExpiredError } from "@/server/sessions";
 
 export interface MappedApiError {
-  status: 400 | 410 | 429 | 500 | 503;
+  status: 400 | 429 | 500 | 503;
   body: ApiErrorResponse;
 }
 
 export function mapApiError(error: unknown): MappedApiError {
-  if (error instanceof SessionExpiredError) {
-    return {
-      status: 410,
-      body: {
-        error: error.message,
-        code: "SESSION_EXPIRED",
-        provider: "server"
-      }
-    };
-  }
-
   if (error instanceof GeminiRequestError) {
     if (error.status === 429) {
       return {

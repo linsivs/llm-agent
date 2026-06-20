@@ -28,12 +28,16 @@ export const chatAnswerSchema = z.object({
   evidence: z.array(z.string().min(1).max(360)).min(1).max(6)
 });
 
-export const chatRequestSchema = z.object({
-  sessionId: z.string().uuid(),
-  message: z.string().trim().min(1).max(2_000)
-});
-
 export type ChatRole = "user" | "assistant";
+
+export const chatHistorySchema = z
+  .array(
+    z.object({
+      role: z.enum(["user", "assistant"]),
+      content: z.string().trim().min(1).max(4_000)
+    })
+  )
+  .max(16);
 
 export interface ChatMessage {
   id: string;
@@ -72,8 +76,6 @@ export interface AnalysisResponse {
     model: string;
     toolCalls: number;
     durationMs: number;
-    sessionId?: string;
-    sessionExpiresAt?: string;
     chatAvailable?: boolean;
   };
 }
@@ -86,7 +88,6 @@ export interface ChatResponse {
     model: string;
     toolCalls: number;
     durationMs: number;
-    sessionExpiresAt: string;
   };
 }
 
@@ -99,7 +100,6 @@ export interface ApiErrorResponse {
     | "NOT_CONFIGURED"
     | "RATE_LIMITED"
     | "PROVIDER_BUSY"
-    | "SESSION_EXPIRED"
     | "AGENT_FAILED"
     | "INTERNAL_ERROR";
   provider?: "gemini" | "e2b" | "server";

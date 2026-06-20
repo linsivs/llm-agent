@@ -19,16 +19,12 @@ import {
   truncateToolOutput,
   validatePythonCode
 } from "@/server/security";
-import {
-  createDatasetSession,
-  SANDBOX_TIMEOUT_MS,
-  sessionExpiresAt
-} from "@/server/sessions";
 
 const MAX_AGENT_TURNS = 8;
 const MAX_CHARTS = 4;
 const MAX_CHART_BASE64_LENGTH = 4_500_000;
 const CODE_TIMEOUT_MS = 45_000;
+const ANALYSIS_SANDBOX_TIMEOUT_MS = 3 * 60 * 1_000;
 
 const SYSTEM_INSTRUCTION = `
 You are an autonomous data analyst working inside a constrained agent loop.
@@ -115,7 +111,7 @@ export async function analyzeDataset({
   try {
     sandbox = await Sandbox.create({
       apiKey: e2bApiKey,
-      timeoutMs: SANDBOX_TIMEOUT_MS,
+      timeoutMs: ANALYSIS_SANDBOX_TIMEOUT_MS,
       allowInternetAccess: false,
       metadata: {
         app: "razbor",
@@ -219,15 +215,6 @@ export async function analyzeDataset({
             continue;
           }
 
-          const session = await createDatasetSession({
-            sandbox,
-            datasetPath,
-            fileName: file.name,
-            model,
-            report: parsed.data
-          });
-          sandbox = undefined;
-
           return {
             report: parsed.data,
             charts,
@@ -238,8 +225,6 @@ export async function analyzeDataset({
               model,
               toolCalls,
               durationMs: Date.now() - startedAt,
-              sessionId: session.id,
-              sessionExpiresAt: sessionExpiresAt(session),
               chatAvailable: true
             }
           };
