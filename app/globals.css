@@ -1466,6 +1466,183 @@ pre.hasError {
   white-space: pre-wrap;
 }
 
+.chatMarkdown {
+  min-width: 0;
+  color: inherit;
+  font-size: 0.84rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.chatMarkdown > :first-child {
+  margin-top: 0;
+}
+
+.chatMarkdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chatMarkdown p {
+  margin: 0.65rem 0;
+  white-space: normal;
+}
+
+.chatMarkdown h1,
+.chatMarkdown h2,
+.chatMarkdown h3,
+.chatMarkdown h4 {
+  margin: 1.15rem 0 0.55rem;
+  color: var(--foreground);
+  font-weight: 680;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.chatMarkdown h1 {
+  font-size: 1.2rem;
+}
+
+.chatMarkdown h2 {
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 1.05rem;
+}
+
+.chatMarkdown h3 {
+  font-size: 0.94rem;
+}
+
+.chatMarkdown h4 {
+  font-size: 0.86rem;
+}
+
+.chatMarkdown strong {
+  color: var(--foreground);
+  font-weight: 720;
+}
+
+.chatMarkdown em {
+  color: var(--muted);
+}
+
+.chatMarkdown ul,
+.chatMarkdown ol {
+  margin: 0.65rem 0;
+  padding-left: 1.35rem;
+}
+
+.chatMarkdown li {
+  padding-left: 0.2rem;
+}
+
+.chatMarkdown li + li {
+  margin-top: 0.38rem;
+}
+
+.chatMarkdown li::marker {
+  color: var(--accent-strong);
+  font-family: var(--font-geist-mono), monospace;
+  font-weight: 700;
+}
+
+.chatMarkdown blockquote {
+  margin: 0.85rem 0;
+  padding: 0.2rem 0 0.2rem 0.8rem;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+.chatMarkdown blockquote p {
+  margin: 0;
+}
+
+.chatMarkdown code {
+  padding: 0.13rem 0.32rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-muted);
+  color: var(--accent-strong);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 0.76em;
+}
+
+.chatMarkdown pre {
+  max-height: 360px;
+  margin: 0.85rem 0;
+  padding: 0.9rem 1rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--code);
+  color: var(--code-text);
+  white-space: pre;
+}
+
+.chatMarkdown pre code {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 0.68rem;
+}
+
+.chatMarkdown a {
+  color: var(--accent-strong);
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 0.2em;
+}
+
+.chatMarkdown a:hover {
+  text-decoration-color: currentColor;
+}
+
+.chatMarkdown hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.chatMarkdown table {
+  width: 100%;
+  margin: 0.85rem 0;
+  overflow: hidden;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font-size: 0.72rem;
+}
+
+.chatMarkdown th,
+.chatMarkdown td {
+  padding: 0.5rem 0.6rem;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.chatMarkdown th {
+  background: var(--surface-muted);
+  color: var(--foreground);
+  font-weight: 680;
+}
+
+.chatMarkdown tr:last-child td {
+  border-bottom: 0;
+}
+
+.chatMarkdown th:last-child,
+.chatMarkdown td:last-child {
+  border-right: 0;
+}
+
+.chatMarkdown input[type="checkbox"] {
+  margin: 0 0.4rem 0 0;
+  accent-color: var(--success);
+}
+
 .chatBubble time {
   margin-top: 0.45rem;
   display: block;

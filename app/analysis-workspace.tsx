@@ -35,6 +35,8 @@ import {
   useRef,
   useState
 } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import type {
   AnalysisResponse,
@@ -432,7 +434,7 @@ export function AnalysisWorkspace() {
           id: createClientId(),
           role: "assistant",
           content:
-            "В демо-датасете Восток дает 41% прироста выручки. Чтобы подтвердить устойчивость результата, агент дополнительно сравнил бы распределения среднего чека и заказов по регионам через Python.",
+            "**Главный вывод:** Восток дает 41% общего прироста выручки.\n\n1. Рост выручки региона составляет **18,4%**.\n2. Число заказов увеличилось на **13,2%**.\n3. Для проверки устойчивости результата нужно сравнить распределения `avg_order` по регионам.\n\n> В демо-режиме ответ показывает формат реального агентного анализа.",
           evidence: [
             "Рост выручки Востока: 18,4%",
             "Рост числа заказов: 13,2%",
@@ -1230,7 +1232,11 @@ function DatasetChat({
                   )}
                 </div>
                 <div className="chatBubble">
-                  <p>{entry.content}</p>
+                  {entry.role === "assistant" ? (
+                    <MarkdownAnswer content={entry.content} />
+                  ) : (
+                    <p>{entry.content}</p>
+                  )}
                   {entry.evidence && entry.evidence.length > 0 && (
                     <ul className="chatEvidence">
                       {entry.evidence.map((item) => (
@@ -1357,6 +1363,29 @@ function DatasetChat({
           </div>
         </section>
       </div>
+    </div>
+  );
+}
+
+function MarkdownAnswer({ content }: { content: string }) {
+  return (
+    <div className="chatMarkdown">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ children, href }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener nofollow"
+            >
+              {children}
+            </a>
+          )
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
