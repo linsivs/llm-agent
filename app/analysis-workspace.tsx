@@ -470,6 +470,15 @@ export function AnalysisWorkspace() {
       });
       const payload = await readJsonResponse<ChatResponse>(response);
 
+      if (response.status === 404) {
+        const fallbackMessage = await runLegacyChatFallback({
+          file,
+          question: cleanMessage
+        });
+        setChatMessages((current) => [...current, fallbackMessage]);
+        return;
+      }
+
       if (!response.ok || isApiError(payload)) {
         throw apiErrorFromPayload(
           payload,
@@ -490,6 +499,51 @@ export function AnalysisWorkspace() {
     } finally {
       setChatBusy(false);
     }
+  }
+
+  async function runLegacyChatFallback({
+    file: fallbackFile,
+    question
+  }: {
+    file: File;
+    question: string;
+  }): Promise<ChatEntry> {
+    const body = new FormData();
+    body.append("file", fallbackFile);
+    body.append(
+      "instructions",
+      [
+        "Это уточняющий вопрос к уже выполненному анализу.",
+        `Вопрос: ${question.slice(0, 1_600)}`,
+        "Проведи новый самостоятельный Python-анализ исходного файла.",
+        "Ответь прежде всего на вопрос. Приведи конкретные значения и укажи ограничения."
+      ].join("\n")
+    );
+
+    const response = await fetch(`${API_URL}/analyze`, {
+      method: "POST",
+      body
+    });
+    const payload = await readJsonResponse<AnalysisResponse>(response);
+
+    if (!response.ok || isApiError(payload)) {
+      throw apiErrorFromPayload(
+        payload,
+        "Агент не смог выполнить повторный анализ."
+      );
+    }
+
+    return {
+      id: createClientId(),
+      role: "assistant",
+      content: `${payload.report.title}\n\n${payload.report.summary}`,
+      evidence: payload.report.insights.slice(0, 6).map(
+        (insight) => `${insight.title}: ${insight.evidence}`
+      ),
+      charts: payload.charts,
+      trace: payload.trace,
+      createdAt: new Date().toISOString()
+    };
   }
 
   return (
